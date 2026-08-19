@@ -1,0 +1,40 @@
+SoloSampler es un plugin que usa la API de Sfizz (libreria compartida, ya está en la carpeta lib/) que es del fork sfizioso (https://github.com/rullopat/sfizioso) como el responsable de renderizar/sintetizar todo lo que tenga que ver con el sampling y demas (asi el codigo se simplifica demasiado). Se usaria el framework JUCE (https://github.com/juce-framework/JUCE) donde exclusivamente se encarga del frontend (la interfaz y controles), y para que sea más simplificado la creación de UI, tiene que ser por medio de la extensión JIVE (https://github.com/ImJimmi/JIVE) y por lo tanto mas mantenible. La idea de SoloSampler es un sampler donde se limita enteramente a solo poseer una sola seccion (nada de multisamples en diferentes notas, solo se permite multiples samples en velocity, no en key range)
+
+Este plugin se trata de que el "archivo" SFZ es virtual (está almacenado en RAM) y el API de sfizz tiene el feature de cargarlo virtualmente. El contenido del SFZ es esencialmente opcodes como siempre.
+La API de sfizz hay una funcion sfizz_load_string() donde hay una variable llamada "path" donde se sostiene el lugar raiz donde la relatividad del resto de paths en el opcode "sample=" se hace referencia.
+
+Para asegurarnos de que la parte mas basica del plugin funciona correctamente, solo implementaremos que cargue 1 solo sample (archivos soportados por sfizz).
+
+La estructura del SFZ generado alojado en RAM es este:
+
+```
+<global>
+[Main features/opcodes]
+[Sample/lista de samples]
+```
+
+este se generaría un `<region> sample=my_sample.wav` ya que de momento solo queremos implementar archivos de audio antes de meternos a implementar archivos SFZ.
+
+La parte del GUI es simple, es un sistema de pestañas (lo menciono para que lo tomes en consideracion la funcionalidad), cada pestaña cubre caracteristicas relacionada a EGs, LFOs y demas. Independientemente de la pestaña seleccionada, abajo hay siempre presente un slider que indica el finetune del sample (opcode `tune=`) y un teclado con scroll donde posee las 128 notas MIDI, el click izquierdo significa tocar la nota y el click derecho significa establecer la nota root (opcode `pitch_keycenter=`) tal como FL Sampler. La primera pestaña presenta las siguientes funciones:
+
+* spinbox: bend range (opcode `bendup=, benddown=`) default: 2400
+* combobox: quality (opcode `quality=`) default: 1
+* combobox: loop mode (opcode `loopmode=`) default: one_shot
+* knob: CC7 (Volume) (MIDI)
+* knob: CC10 (Pan) (MIDI)
+* slider: offset (con checkbox), analiza el sample importado y cuenta el numero maximo de samples disponibles. Si por alguna razon no se puede medir esto (por ejemplo, una pluralidad de samples en velocity) entonces el maximo por default es 8192.
+Y por ultimo hay una grafica del sample cargado (este no se muestra si es un SFZ), y se pone las lineas que indican el start loop y end loop del sample y si se usa el offset, se muestra la linea offset.
+
+Los elementos que digan "con checkbox" se refiere a que se activan (se escriben en el SFZ) o se desactivan (no se escriben en el SFZ) con un checkbox.
+
+El SFZ generado se actualiza cada momento en que se cambia una variable (a excepcion del MIDI, estos solo mandan señales MIDI y se sincronizan con las señales MIDI enviadas desde el DAW) y al estar en RAM, no hay riesgo ninguno en hacer actualizaciones super rapidas.
+
+El SFZ generado se guarda en el proyecto del DAW (o sea al recargar el plugin este consulta si hay un SFZ generado guardado, por supuesto la GUI tiene que estar sincronizado con la configuracion dejada por el usuario).
+
+Se puede reemplaza el sample al cargar otro. Este se carga con drag n drop o al clickear la zona del waveform abre un explorador de archivos. Al momento del reemplazo verifica si hay offset compatible (o sea que el slider no sobrepase el valor del numero de samples maximo que posee el audio cargado), si el slider supera al numero de samples maximo, este se restaura al maximo del sample cargado (ademas de reasignar el maximo del slider a ese numero de samples), es como un clamp.
+
+Con esto especificado, el plugin debe compilarse como CLAP, se usaria CMakeList en vez de Projucer. Debe ser un plugin instrumental.
+
+Esta seria la implementacion basica de la idea, con el tiempo se iria agregando mas funciones.
+
+El mecanismo de cargar el sample y asegurarse que el path relativo sea el correcto, lo he escrito en reference/sfz_path.py
