@@ -59,7 +59,12 @@ void SfizzEngine::renderBlock(const MidiEvent* events, int numEvents, float** ch
                                            e.velocity);
                 break;
             case MidiEvent::Type::CC:
-                sfizz_send_cc_channel(synth, e.delaySamples, e.channel, e.ccNumber, e.ccValue);
+                if (e.ccValueHd >= 0.0f)
+                    sfizz_send_hdcc_channel(synth, e.delaySamples, e.channel, e.ccNumber,
+                                            e.ccValueHd);
+                else
+                    sfizz_send_cc_channel(synth, e.delaySamples, e.channel, e.ccNumber,
+                                          e.ccValue);
                 break;
             case MidiEvent::Type::PitchWheel:
                 sfizz_send_pitch_wheel_channel(synth, e.delaySamples, e.channel, e.pitch);

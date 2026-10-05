@@ -36,6 +36,7 @@ struct Plugin {
     const clap_host_t* host = nullptr;
     std::unique_ptr<GuiWindow> window;
     SfizzEngine engine;
+    ExternalMidiProcessor externalMidi; // External tab, audio thread only
     SharedParams params;
     EditorUIState uiState;
 
@@ -589,6 +590,7 @@ const clap_plugin_note_ports_t kExtNotePorts = {
 
 constexpr uint32_t kStateMagic = 0x53534C50; // "PLSS" (SoloSampler) LE bytes
 constexpr uint32_t kStateVersion = 22; // v22: tuningFrequency/scalaFilePath (DAW-session-only, not preset)
+constexpr uint32_t kExternalBlobMagic = 0x58455353; // "SSEX", External tab trailing blob
 
 bool streamWriteAll(const clap_ostream_t* stream, const void* data, uint64_t size) {
     const uint8_t* p = static_cast<const uint8_t*>(data);
@@ -744,6 +746,7 @@ void applyPresetFields(Plugin* p, const PresetFields& f, bool applySampleData) {
     p->params.character = f.character;
     p->params.multisampleRootNote = f.multisampleRootNote;
     p->params.panX2 = f.panX2;
+    p->params.external.store(f.external);
     {
         std::lock_guard<std::mutex> lock(p->params.guiState.mutex);
         p->params.guiState.customOpcodesText = f.customOpcodesText;
@@ -909,6 +912,13 @@ bool stateSave(const clap_plugin_t* plugin, const clap_ostream_t* stream) {
     ok = ok && writeVal(stream, static_cast<uint32_t>(scalaFilePath.size()));
     if (ok && !scalaFilePath.empty())
         ok = streamWriteAll(stream, scalaFilePath.data(), scalaFilePath.size());
+    // External tab: optional trailing blob (no kStateVersion bump - a v22
+    // state without it still loads, see stateLoad), same layout as
+    // PresetFile.cpp's writeExternalBlob.
+    const ExternalSettings external = p->params.external.load();
+    ok = ok && writeVal(stream, kExternalBlobMagic) &&
+         writeVal(stream, static_cast<uint32_t>(sizeof(ExternalSettings))) &&
+         streamWriteAll(stream, &external, sizeof(ExternalSettings));
     return ok;
 }
 
@@ -1078,6 +1088,24 @@ bool stateLoad(const clap_plugin_t* plugin, const clap_istream_t* stream) {
         if (!streamReadAll(stream, scalaFilePath.data(), scalaPathLen)) return false;
     }
 
+    // External tab: optional trailing blob - absent in states saved before
+    // it existed, which then just keep the defaults. Copies at most
+    // sizeof(ExternalSettings) bytes so an older, shorter blob also works.
+    ExternalSettings external;
+    {
+        uint32_t extMagic = 0, extSize = 0;
+        if (readVal(stream, extMagic) && extMagic == kExternalBlobMagic &&
+            readVal(stream, extSize) && extSize <= (1u << 16)) {
+            std::vector<uint8_t> bytes(extSize);
+            if (extSize == 0 || streamReadAll(stream, bytes.data(), extSize)) {
+                ExternalSettings loaded;
+                std::memcpy(&loaded, bytes.data(),
+                            std::min<size_t>(extSize, sizeof(ExternalSettings)));
+                external = loaded;
+            }
+        }
+    }
+
     PresetFields f;
     f.rootNote = rootNote;
     f.volume = volume;
@@ -1196,6 +1224,7 @@ bool stateLoad(const clap_plugin_t* plugin, const clap_istream_t* stream) {
     f.character = character;
     f.multisampleRootNote = multisampleRootNote;
     f.panX2 = panX2 != 0;
+    f.external = external;
     f.stack = std::move(stack);
 
     applyPresetFields(p, f, /*applySampleData=*/true);
@@ -1371,6 +1400,7 @@ PresetFields fieldsFromParams(SharedParams& params) {
     f.character = params.character.load();
     f.multisampleRootNote = params.multisampleRootNote.load();
     f.panX2 = params.panX2.load();
+    f.external = params.external.load();
     {
         std::lock_guard<std::mutex> lock(params.guiState.mutex);
         f.customOpcodesText = params.guiState.customOpcodesText;
@@ -1663,6 +1693,7 @@ bool plugActivate(const clap_plugin_t* plugin, double sampleRate, uint32_t,
                   uint32_t maxFrames) {
     Plugin* p = self(plugin);
     p->engine.prepare(sampleRate, static_cast<int>(maxFrames));
+    p->externalMidi.prepare(sampleRate, static_cast<int>(maxFrames));
     // Loads a valid but sample-less <region> - silence is the correct
     // output until a sample is dropped in (phase 4).
     regenerateAndLoadSfz(p);
@@ -1761,9 +1792,28 @@ clap_process_status plugProcess(const clap_plugin_t* plugin, const clap_process_
         events[numEvents++] = ev;
     }
 
-    p->engine.renderBlock(events, static_cast<int>(numEvents), ob.data32,
-                          static_cast<int>(ob.channel_count), static_cast<int>(process->frames_count),
+    // External tab's MIDI preprocessor (a plain copy when disabled) - may
+    // add generated pitch-wheel events, hence the larger output array.
+    constexpr int kMaxOutEvents = kMaxEvents + 192; // + bends + vibrato CC
+    SfizzEngine::MidiEvent outEvents[kMaxOutEvents];
+    int numOutEvents = 0;
+    const int numFrames = static_cast<int>(process->frames_count);
+    const bool applyGain = p->externalMidi.process(
+        events, static_cast<int>(numEvents), numFrames, p->params.external,
+        p->params.bendUpCents.load(), p->params.bendDownCents.load(),
+        p->params.mpeEnabled.load(), outEvents, numOutEvents, kMaxOutEvents);
+
+    p->engine.renderBlock(outEvents, numOutEvents, ob.data32,
+                          static_cast<int>(ob.channel_count), numFrames,
                           p->params.mpeEnabled.load(), p->params.tuningFrequency.load());
+    if (applyGain) {
+        const float* gain = p->externalMidi.gain();
+        for (uint32_t c = 0; c < ob.channel_count; ++c) {
+            float* ch = ob.data32[c];
+            if (!ch) continue;
+            for (int i = 0; i < numFrames; ++i) ch[i] *= gain[i];
+        }
+    }
     p->params.activeVoiceCount = p->engine.activeVoiceCount();
     return CLAP_PROCESS_CONTINUE;
 }

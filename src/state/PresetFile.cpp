@@ -1,6 +1,8 @@
 #include "PresetFile.h"
 
+#include <algorithm>
 #include <cstdint>
+#include <cstring>
 #include <fstream>
 
 namespace {
@@ -43,6 +45,32 @@ bool readBool(std::ifstream& s, bool& b) {
     if (!readVal(s, v)) return false;
     b = v != 0;
     return true;
+}
+
+constexpr uint32_t kExternalBlobMagic = 0x58455353; // "SSEX" LE bytes
+
+// External tab settings: magic + byte size + the raw ExternalSettings
+// struct, appended after everything else. Reading copies at most
+// sizeof(ExternalSettings) bytes over a default-constructed struct, so a
+// shorter blob from an older build keeps its newer fields at their
+// defaults - and a file with no blob at all (written before the External
+// tab existed) still loads.
+bool writeExternalBlob(std::ofstream& s, const ExternalSettings& e) {
+    if (!writeVal(s, kExternalBlobMagic) ||
+        !writeVal(s, static_cast<uint32_t>(sizeof(ExternalSettings))))
+        return false;
+    s.write(reinterpret_cast<const char*>(&e), sizeof(ExternalSettings));
+    return static_cast<bool>(s);
+}
+void readExternalBlob(std::ifstream& s, ExternalSettings& e) {
+    uint32_t magic = 0, size = 0;
+    if (!readVal(s, magic) || magic != kExternalBlobMagic || !readVal(s, size)) return;
+    std::string bytes(size, '\0');
+    s.read(bytes.data(), static_cast<std::streamsize>(size));
+    if (!s) return;
+    ExternalSettings loaded;
+    std::memcpy(&loaded, bytes.data(), std::min<size_t>(size, sizeof(ExternalSettings)));
+    e = loaded;
 }
 
 } // namespace
@@ -121,6 +149,7 @@ bool writePresetFile(const std::string& path, int kind, const PresetFields& f) {
                 writeStr(s, item.regionsText);
         }
     }
+    ok = ok && writeExternalBlob(s, f.external);
 
     s.flush();
     return ok && static_cast<bool>(s);
@@ -219,6 +248,7 @@ PresetFileResult readPresetFile(const std::string& path) {
             if (ok) f.stack.push_back(std::move(item));
         }
     }
+    if (ok) readExternalBlob(s, f.external); // optional, see readExternalBlob
 
     if (!ok) {
         result.error = "Corrupt or truncated preset/profile file: " + path;

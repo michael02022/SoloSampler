@@ -51,6 +51,10 @@ public:
         // when MPE is disabled, so passing the real channel here is safe
         // either way.
         int channel = 0;
+        // CC only: when >= 0, sent as a high-resolution CC (normalized
+        // 0..1, sfizz_send_hdcc_channel) instead of the 7-bit ccValue - for
+        // generated continuous signals (External tab's vibrato CC out).
+        float ccValueHd = -1.0f;
     };
 
     // Audio thread only. events must be ordered by delaySamples, matching

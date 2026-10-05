@@ -56,7 +56,7 @@ std::string buildSfzText(const SfzRegionParams& params) {
     // Piano right-click's multisample-mode nudge (see multisampleRootNote's
     // own comment) - added unconditionally, since it's a true no-op at its
     // default value of 60.
-    const int transposeValue = params.character + (params.multisampleRootNote - 60);
+    const int transposeValue = params.character + (60 - params.multisampleRootNote);
     sfz << "polyphony=" << params.polyphony << "\n"
         << "note_polyphony=" << params.notePolyphony << "\n"
         << "tune_oncc119=" << static_cast<int>(std::lround(params.tuneCents)) << "\n"

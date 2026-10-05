@@ -15,6 +15,8 @@
 #include <string>
 #include <vector>
 
+#include "midi/ExternalMidi.h"
+
 // SFZ loop-mode opcode strings, indexed by SharedParams::loopModeIndex.
 // Matches the old JUCE AudioParameterChoice exactly (order and default
 // index 1 = "one_shot" both matter - don't reorder without updating
@@ -309,6 +311,11 @@ struct SharedParams {
     std::atomic<float> reverbDamp{50.0f};     // 0..100 (reverb_damp=)
     std::atomic<float> reverbDry{100.0f};     // 0..100 (reverb_dry=)
     std::atomic<float> reverbWet{100.0f};     // 0..100 (reverb_wet=)
+
+    // "External" tab: MIDI preprocessor settings (see midi/ExternalMidi.h).
+    // Not SFZ opcodes - read fresh every block by the audio thread, so
+    // changing them never calls onParamChanged/regenerateAndLoadSfz.
+    ExternalParams external;
 
     // CC7 (volume) / CC10 (pan), 0-127. Two directions share these atomics:
     // the audio thread updates them on incoming MIDI CC (so the GUI can

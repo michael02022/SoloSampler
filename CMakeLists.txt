@@ -52,6 +52,7 @@ add_library(solosampler MODULE
   src/state/SfzFlatten.cpp
   src/state/SampleInfo.cpp
   src/state/PresetFile.cpp
+  src/midi/ExternalMidi.cpp
   external/imgui/imgui.cpp
   external/imgui/imgui_draw.cpp
   external/imgui/imgui_tables.cpp

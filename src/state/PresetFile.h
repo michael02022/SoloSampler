@@ -9,6 +9,8 @@
 #include <string>
 #include <vector>
 
+#include "midi/ExternalSettings.h"
+
 // One entry of the Sample tab's load stack, as persisted in a .sspreset/CLAP
 // host state - mirrors shared.hpp's GuiState::StackItem but only the fields
 // that need to survive a save (sampleRelativePath/regionCount are re-derived
@@ -138,6 +140,10 @@ struct PresetFields {
     float reverbDamp = 50.0f;
     float reverbDry = 100.0f;
     float reverbWet = 100.0f;
+    // External tab - stored as a trailing, size-prefixed blob after
+    // everything else (see writeExternalBlob), so files written before it
+    // existed still load, with these left at their defaults.
+    ExternalSettings external;
     std::string customOpcodesText;
     bool mpeEnabled = false;
     int character = 0;

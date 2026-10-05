@@ -1311,6 +1311,145 @@ void drawLogTab(SharedParams& params) {
     ImGui::EndChild();
 }
 
+
+// ---------------------------------------------------------------- External
+//
+// MIDI preprocessor (midi/ExternalMidi.h) - nothing here is an SFZ opcode,
+// so no control calls onParamChanged; the audio thread reads
+// params.external fresh every block. Sliders tagged [CCn] follow that CC
+// when the DAW sends it (the audio thread writes the same atomic), and are
+// otherwise just the value in use.
+
+void extFloatSlider(std::atomic<float>& param, const char* label, const char* popupId, float lo,
+                    float hi, float defaultValue, const char* format) {
+    ImGui::SetNextItemWidth(200);
+    float v = param.load();
+    bool changed = ImGui::SliderFloat(label, &v, lo, hi, format);
+    changed |= sliderExtrasFloat(popupId, &v, defaultValue, lo, hi);
+    if (changed) param = v;
+}
+
+void extCombo(std::atomic<int>& param, const char* label, const char* const* names, int count) {
+    ImGui::SetNextItemWidth(200);
+    int idx = std::clamp(param.load(), 0, count - 1);
+    if (ImGui::BeginCombo(label, names[idx])) {
+        for (int i = 0; i < count; ++i) {
+            bool sel = i == idx;
+            if (ImGui::Selectable(names[i], sel)) param = i;
+            if (sel) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+}
+
+void extSlopeControls(std::atomic<int>& mode, std::atomic<float>& slope, const char* modeLabel,
+                      const char* slopeLabel, const char* slopePopupId) {
+    extCombo(mode, modeLabel, kExtSlopeModeNames, 2);
+    // Slope only shapes the Vital power curve; the ExMachina cosine is fixed.
+    const bool vital = mode.load() == 0;
+    if (!vital) ImGui::BeginDisabled();
+    extFloatSlider(slope, slopeLabel, slopePopupId, -8.0f, 8.0f, 0.0f, "%.2f");
+    if (!vital) ImGui::EndDisabled();
+}
+
+void drawExternalTab(SharedParams& params) {
+    ExternalParams& ext = params.external;
+
+    bool enabled = ext.enabled.load();
+    if (ImGui::Checkbox("Enable External MIDI preprocessor", &enabled)) ext.enabled = enabled;
+    ImGui::TextDisabled("Cents are converted to pitch bend through Bend Range (+%d / %d cents).",
+                        params.bendUpCents.load(), params.bendDownCents.load());
+
+    if (!enabled) ImGui::BeginDisabled();
+
+    ImGui::Spacing();
+    ImGui::SeparatorText("Pitch randomizer");
+    ImGui::TextDisabled("Note-on slide: starts at a random offset, slides back to pitch");
+    extFloatSlider(ext.noteOnCents, "Note-on Range (cents)", "##extoncentspopup", 0.0f, 1200.0f,
+                   0.0f, "%.1f");
+    extCombo(ext.noteOnPolarity, "Note-on Polarity", kExtPolarityNames, 3);
+    extFloatSlider(ext.noteOnMinMs, "Note-on Min Length (ms)", "##extonminpopup", 0.0f, 2000.0f,
+                   30.0f, "%.1f");
+    extFloatSlider(ext.noteOnMaxMs, "Note-on Max Length (ms)", "##extonmaxpopup", 0.0f, 2000.0f,
+                   120.0f, "%.1f");
+    ImGui::TextDisabled("Note-off slide: drifts to a random offset during the release");
+    extFloatSlider(ext.noteOffCents, "Note-off Range (cents)", "##extoffcentspopup", 0.0f,
+                   1200.0f, 0.0f, "%.1f");
+    extCombo(ext.noteOffPolarity, "Note-off Polarity", kExtPolarityNames, 3);
+    extFloatSlider(ext.noteOffMinMs, "Note-off Min Length (ms)", "##extoffminpopup", 0.0f, 2000.0f,
+                   50.0f, "%.1f");
+    extFloatSlider(ext.noteOffMaxMs, "Note-off Max Length (ms)", "##extoffmaxpopup", 0.0f, 2000.0f,
+                   200.0f, "%.1f");
+    extCombo(ext.driftModel, "Drift Model", kExtDriftModelNames, 3);
+    extFloatSlider(ext.driftScale, "Drift Depth (%)", "##extdriftpopup", 0.0f, 400.0f, 100.0f,
+                   "%.0f");
+
+    ImGui::Spacing();
+    ImGui::SeparatorText("Mono legato");
+    bool mono = ext.mono.load();
+    if (ImGui::Checkbox("Mono Legato [CC16]", &mono)) ext.mono = mono;
+    ImGui::SameLine();
+    bool retrigger = ext.retrigger.load();
+    if (ImGui::Checkbox("Retrigger Sample", &retrigger)) ext.retrigger = retrigger;
+    ImGui::TextDisabled(retrigger
+                            ? "Each legato key retriggers the sample (still mono), gliding from the previous pitch."
+                            : "Only the first note reaches sfizz; later keys bend it, never retrigger.");
+    if (mono && params.mpeEnabled.load())
+        ImGui::TextDisabled("MPE on: each note sfizz plays gets its own channel (2-16), so the\n"
+                            "previous note's release keeps its pitch and blends into the next.");
+    extFloatSlider(ext.glideMs, "Glide Size (ms) [CC14]", "##extglidepopup", 0.0f, 1500.0f, 0.0f,
+                   ext.glideMs.load() <= 0.0f ? "off" : "%.0f");
+    extSlopeControls(ext.glideSlopeMode, ext.glideSlope, "Glide Slope Mode", "Glide Slope",
+                     "##extglideslopepopup");
+
+    ImGui::Spacing();
+    ImGui::SeparatorText("Amplitude expression glide");
+    bool ampExpr = ext.ampExprEnabled.load();
+    if (ImGui::Checkbox("Amplitude Expression Glide [CC15]", &ampExpr)) ext.ampExprEnabled = ampExpr;
+    extFloatSlider(ext.ampExprAmount, "Effect Quantity (%)", "##extampamountpopup", 0.0f, 100.0f,
+                   50.0f, "%.0f");
+    extSlopeControls(ext.ampExprSlopeMode, ext.ampExprSlope, "Amp Slope Mode", "Amp Slope",
+                     "##extampslopepopup");
+
+    ImGui::Spacing();
+    ImGui::SeparatorText("Vibrato");
+    bool vibPitch = ext.vibratoPitch.load();
+    if (ImGui::Checkbox("Vibrato Pitch", &vibPitch)) ext.vibratoPitch = vibPitch;
+    ImGui::SameLine();
+    {
+        ImGui::SetNextItemWidth(110);
+        int ccOut = std::clamp(ext.vibratoCcOut.load(), 0, 127);
+        char preview[16];
+        if (ccOut == 0) std::snprintf(preview, sizeof(preview), "Off");
+        else std::snprintf(preview, sizeof(preview), "CC%d", ccOut);
+        if (ImGui::BeginCombo("Vibrato -> CC", preview)) {
+            for (int i = 0; i <= 127; ++i) {
+                char label[16];
+                if (i == 0) std::snprintf(label, sizeof(label), "Off");
+                else std::snprintf(label, sizeof(label), "CC%d", i);
+                bool sel = i == ccOut;
+                if (ImGui::Selectable(label, sel)) ext.vibratoCcOut = i;
+                if (sel) ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+        if (ccOut > 0)
+            ImGui::TextDisabled("CC%d rests at 64 (0.5); e.g. cutoff_oncc%d=1200 cutoff_curvecc%d=1",
+                                ccOut, ccOut, ccOut);
+    }
+    ImGui::SetNextItemWidth(200);
+    int vibAmount = ext.vibratoAmount.load();
+    bool vibChanged = ImGui::SliderInt("Vibrato Amount [CC1]", &vibAmount, 0, 127);
+    vibChanged |= sliderExtrasInt("##extvibamountpopup", &vibAmount, 0, 0, 127);
+    if (vibChanged) ext.vibratoAmount = vibAmount;
+    extFloatSlider(ext.vibratoDepthCents, "Max Depth (cents)", "##extvibdepthpopup", 0.0f, 200.0f,
+                   35.0f, "%.1f");
+    extFloatSlider(ext.vibratoRateHz, "Rate (Hz)", "##extvibratepopup", 0.5f, 12.0f, 5.2f, "%.2f");
+    extCombo(ext.vibratoModel, "Vibrato Model", kExtVibratoModelNames, 2);
+
+    if (!enabled) ImGui::EndDisabled();
+}
+
 } // namespace
 
 void drawEditorUI(SharedParams& params, EditorUIState& ui,
@@ -1445,6 +1584,10 @@ void drawEditorUI(SharedParams& params, EditorUIState& ui,
         }
         if (ImGui::BeginTabItem("FX", nullptr, tabFlags("FX"))) {
             tabBody("##fxtabscroll", [&] { drawFxTab(params, onParamChanged); });
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("External", nullptr, tabFlags("External"))) {
+            tabBody("##externaltabscroll", [&] { drawExternalTab(params); });
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Log", nullptr, tabFlags("Log"))) {
